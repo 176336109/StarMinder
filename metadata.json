@@ -1,0 +1,5 @@
+{
+  "name": "Interstellar Mining Corp",
+  "description": "A roguelike space survival shooter where you defend a stationary mining ship against hordes of aliens while scanning asteroids.",
+  "requestFramePermissions": []
+}
