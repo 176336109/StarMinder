@@ -14,7 +14,7 @@ const dist = (v1: Vector2, v2: Vector2) => Math.sqrt(Math.pow(v2.x - v1.x, 2) + 
 const angle = (v1: Vector2, v2: Vector2) => Math.atan2(v2.y - v1.y, v2.x - v1.x);
 
 // Check if a line segment between start and end intersects with any asteroid
-const isLineBlocked = (start: Vector2, end: Vector2, asteroids: Asteroid[]): boolean => {
+export const isLineBlocked = (start: Vector2, end: Vector2, asteroids: Asteroid[]): boolean => {
     for (const ast of asteroids) {
         // Vector math to find distance from point (ast center) to line segment (start-end)
         const l2 = Math.pow(end.x - start.x, 2) + Math.pow(end.y - start.y, 2);
@@ -28,9 +28,9 @@ const isLineBlocked = (start: Vector2, end: Vector2, asteroids: Asteroid[]): boo
         
         const distSq = Math.pow(ast.position.x - projX, 2) + Math.pow(ast.position.y - projY, 2);
         
-        // Check if distance is less than radius (plus a bit of margin for visual correctness)
-        // Asteroid radius + projectile radius allowance (~10px)
-        if (distSq < Math.pow(ast.radius + 10, 2)) {
+        // Check if distance is less than radius
+        // REMOVED +10 buffer to match visual shadow exactly
+        if (distSq < Math.pow(ast.radius, 2)) {
             return true;
         }
     }
@@ -251,48 +251,66 @@ export const updateGame = (state: GameState): GameState => {
     }
 
     // 2. Player Logic (Auto Fire)
-    let nearestEnemy: Enemy | null = null;
-    let minDst = Infinity;
+    let nearestVisible: Enemy | null = null;
+    let minDstVisible = Infinity;
+    
+    let nearestAny: Enemy | null = null;
+    let minDstAny = Infinity;
 
     state.enemies.forEach(e => {
         const d = dist(player.position, e.position);
         
-        // Target closest enemy that is NOT blocked by an asteroid (Line of Sight)
-        if (d < minDst && !isLineBlocked(player.position, e.position, state.asteroids)) {
-            minDst = d;
-            nearestEnemy = e;
+        // Check for visible target (for MG / Laser)
+        if (!isLineBlocked(player.position, e.position, state.asteroids)) {
+            if (d < minDstVisible) {
+                minDstVisible = d;
+                nearestVisible = e;
+            }
+        }
+
+        // Check for ANY target (for Missiles)
+        if (d < minDstAny) {
+            minDstAny = d;
+            nearestAny = e;
         }
     });
 
-    if (nearestEnemy) {
-        const target = nearestEnemy as Enemy;
-        player.rotation = angle(player.position, target.position);
+    // Rotation Priority: Visible > Hidden (if missile available) > Keep Rotation
+    if (nearestVisible) {
+        player.rotation = angle(player.position, nearestVisible.position);
+    } else if (nearestAny && player.weapons[WeaponType.MISSILE].level > 0) {
+        player.rotation = angle(player.position, nearestAny.position);
+    }
 
-        // Fire Weapons
-        Object.entries(player.weapons).forEach(([key, weapon]) => {
-            const wType = key as WeaponType;
-            if (weapon.level > 0 && weapon.cooldown <= 0) {
-                const distToTarget = dist(player.position, target.position);
-                
-                if (distToTarget <= weapon.range) {
-                    if (wType === WeaponType.MACHINE_GUN) {
-                        state.projectiles.push({
-                            id: `p-${Math.random()}`,
-                            position: { ...player.position },
-                            velocity: { 
-                                x: Math.cos(player.rotation) * 10, 
-                                y: Math.sin(player.rotation) * 10 
-                            },
-                            rotation: player.rotation,
-                            radius: 8, 
-                            color: WEAPON_STATS.MACHINE_GUN.color,
-                            damage: weapon.damage,
-                            duration: 60,
-                            isEnemy: false,
-                            type: 'BULLET'
-                        });
-                        weapon.cooldown = weapon.maxCooldown;
-                    } else if (wType === WeaponType.MISSILE) {
+    // Fire Weapons
+    Object.entries(player.weapons).forEach(([key, weapon]) => {
+        const wType = key as WeaponType;
+        
+        // Missiles can target anyone, others need Line of Sight
+        const target = wType === WeaponType.MISSILE ? nearestAny : nearestVisible;
+
+        if (target && weapon.level > 0 && weapon.cooldown <= 0) {
+            const distToTarget = dist(player.position, target.position);
+            
+            if (distToTarget <= weapon.range) {
+                if (wType === WeaponType.MACHINE_GUN) {
+                    state.projectiles.push({
+                        id: `p-${Math.random()}`,
+                        position: { ...player.position },
+                        velocity: { 
+                            x: Math.cos(player.rotation) * 10, 
+                            y: Math.sin(player.rotation) * 10 
+                        },
+                        rotation: player.rotation,
+                        radius: 8, 
+                        color: WEAPON_STATS.MACHINE_GUN.color,
+                        damage: weapon.damage,
+                        duration: 60,
+                        isEnemy: false,
+                        type: 'BULLET'
+                    });
+                    weapon.cooldown = weapon.maxCooldown;
+                } else if (wType === WeaponType.MISSILE) {
                          state.projectiles.push({
                             id: `m-${Math.random()}`,
                             position: { ...player.position },
@@ -306,7 +324,7 @@ export const updateGame = (state: GameState): GameState => {
                             damage: weapon.damage,
                             duration: 180,
                             isEnemy: false,
-                            targetId: target.id,
+                            targetId: target.id, // Target the hidden/visible enemy
                             type: 'MISSILE'
                         });
                         weapon.cooldown = weapon.maxCooldown;
@@ -323,7 +341,6 @@ export const updateGame = (state: GameState): GameState => {
                 weapon.cooldown--;
             }
         });
-    }
 
     // 3. Enemies
     state.enemies.forEach(e => {
@@ -451,7 +468,8 @@ export const updateGame = (state: GameState): GameState => {
         let hit = false;
         
         // Projectiles hit asteroids too (simple collision)
-        if (!p.isEnemy) {
+        // MISSILES bypass obstacles
+        if (!p.isEnemy && p.type !== 'MISSILE') {
             for (const ast of state.asteroids) {
                 if (dist(p.position, ast.position) < ast.radius + p.radius) {
                     hit = true;

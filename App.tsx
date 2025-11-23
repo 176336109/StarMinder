@@ -1,13 +1,79 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { 
-    GameState, GamePhase, WeaponType, UpgradeOption, EnemyType 
+    GameState, GamePhase, WeaponType, UpgradeOption, EnemyType, Vector2, Asteroid
 } from './types';
 import { 
     COLORS, SCREEN_WIDTH, SCREEN_HEIGHT, FPS, SCAN_DURATION_SEC, 
     WARP_DURATION_SEC, TARGET_CRYSTALS, TEXT_CONFIG, ASTEROID_CONFIG 
 } from './constants';
-import { createInitialState, updateGame } from './gameEngine';
+import { createInitialState, updateGame, isLineBlocked } from './gameEngine';
 import { Zap, Target, Shield, Skull, TrendingUp, Heart, MousePointerClick, AlertTriangle } from 'lucide-react';
+
+// Shadow rendering helper
+const drawShadows = (ctx: CanvasRenderingContext2D, playerPos: Vector2, asteroids: Asteroid[]) => {
+    ctx.save();
+    
+    // VISUAL UPDATE: Make Fog of War distinct
+    // Background is black (#000), so we make the fog a dark grey/slate color 
+    // to represent "unscanned/interference zones".
+    ctx.fillStyle = 'rgba(30, 41, 59, 0.95)'; // Slate-800, distinct from black space
+    
+    // Add a border to the fog to make the cone edges sharp and visible
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.3)'; // Slate-400, faint line
+    ctx.lineWidth = 2;
+
+    asteroids.forEach(ast => {
+        const dx = ast.position.x - playerPos.x;
+        const dy = ast.position.y - playerPos.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        
+        if (dist <= ast.radius) return; 
+
+        // Angle from player to asteroid center
+        const angleToCenter = Math.atan2(dy, dx);
+        
+        // Angular half-width of the asteroid as seen by player
+        const angleOffset = Math.asin(ast.radius / dist);
+        
+        // Tangent points on the asteroid
+        const tangentDist = Math.sqrt(dist * dist - ast.radius * ast.radius);
+        
+        const a1 = angleToCenter - angleOffset;
+        const a2 = angleToCenter + angleOffset;
+        
+        // Start points (tangents on the asteroid)
+        const p1 = {
+            x: playerPos.x + Math.cos(a1) * tangentDist,
+            y: playerPos.y + Math.sin(a1) * tangentDist
+        };
+        const p2 = {
+            x: playerPos.x + Math.cos(a2) * tangentDist,
+            y: playerPos.y + Math.sin(a2) * tangentDist
+        };
+        
+        // Project "far" points well off-screen
+        const SHADOW_LENGTH = 3000;
+        const p3 = {
+             x: playerPos.x + Math.cos(a1) * SHADOW_LENGTH,
+             y: playerPos.y + Math.sin(a1) * SHADOW_LENGTH
+        };
+        const p4 = {
+             x: playerPos.x + Math.cos(a2) * SHADOW_LENGTH,
+             y: playerPos.y + Math.sin(a2) * SHADOW_LENGTH
+        };
+        
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p3.x, p3.y);
+        ctx.lineTo(p4.x, p4.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.closePath();
+        
+        ctx.fill();
+        ctx.stroke();
+    });
+    ctx.restore();
+};
 
 export default function App() {
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -35,7 +101,7 @@ export default function App() {
         scanProgress: number;
         warpProgress: number;
     }>({
-        phase: GamePhase.INTRO, // Start with INTRO match gameEngine
+        phase: GamePhase.INTRO,
         hp: 100, maxHp: 100, xp: 0, maxXp: 100, level: 1, crystals: 0,
         scanProgress: 0, warpProgress: 0
     });
@@ -71,7 +137,11 @@ export default function App() {
             }
         }
 
-        // 2. Asteroids
+        // 2. FOG OF WAR (Shadows)
+        // Drawn BEFORE entities but AFTER background stars
+        drawShadows(ctx, state.player.position, state.asteroids);
+
+        // 3. Asteroids
         state.asteroids.forEach(a => {
             ctx.fillStyle = a.color;
             ctx.beginPath();
@@ -114,7 +184,7 @@ export default function App() {
             }
         });
 
-        // 3. XP Orbs
+        // 4. XP Orbs
         state.xpOrbs.forEach(orb => {
             ctx.fillStyle = orb.color;
             ctx.beginPath();
@@ -122,53 +192,99 @@ export default function App() {
             ctx.fill();
         });
 
-        // 4. Enemies
+        // 5. Enemies
         state.enemies.forEach(e => {
-            ctx.fillStyle = e.color;
+            // CHECK VISIBILITY (Line of Sight)
+            const isBlocked = isLineBlocked(state.player.position, e.position, state.asteroids);
+            
             ctx.save();
             ctx.translate(e.position.x, e.position.y);
-            ctx.rotate(e.rotation);
-            // Draw shape based on type
-            if (e.type === EnemyType.BOSS) {
-                // Big menacing polygon
+            
+            if (isBlocked) {
+                // --- HIDDEN ENEMY: SIGNAL ONLY ---
+                
+                // Bobbing animation for the signal
+                const offset = Math.sin(Date.now() / 150) * 3;
+                ctx.translate(0, offset);
+
+                // 1. Scanner Bracket (Tech look)
+                ctx.strokeStyle = '#eab308'; // Yellow
+                ctx.lineWidth = 2;
+                const s = 15;
+                const gap = 5;
+                
                 ctx.beginPath();
-                const sides = 8;
-                for (let i = 0; i < sides; i++) {
-                    const angle = (i / sides) * Math.PI * 2;
-                    const r = e.radius * (1 + Math.sin(Date.now() / 200 + i) * 0.1); // Pulsing
-                    ctx.lineTo(Math.cos(angle) * r, Math.sin(angle) * r);
-                }
+                // Top-Left
+                ctx.moveTo(-s, -s + 10); ctx.lineTo(-s, -s); ctx.lineTo(-s + 10, -s);
+                // Top-Right
+                ctx.moveTo(s, -s + 10); ctx.lineTo(s, -s); ctx.lineTo(s - 10, -s);
+                // Bottom-Left
+                ctx.moveTo(-s, s - 10); ctx.lineTo(-s, s); ctx.lineTo(-s + 10, s);
+                // Bottom-Right
+                ctx.moveTo(s, s - 10); ctx.lineTo(s, s); ctx.lineTo(s - 10, s);
+                ctx.stroke();
+
+                // 2. Warning Triangle
+                ctx.beginPath();
+                ctx.moveTo(0, -10);
+                ctx.lineTo(10, 8);
+                ctx.lineTo(-10, 8);
                 ctx.closePath();
+                ctx.fillStyle = 'rgba(234, 179, 8, 0.8)'; 
                 ctx.fill();
-                // Core
+
+                // 3. Exclamation
                 ctx.fillStyle = '#000';
-                ctx.beginPath();
-                ctx.arc(0, 0, e.radius * 0.4, 0, Math.PI*2);
-                ctx.fill();
-            } else if (e.type === EnemyType.TANK) {
-                ctx.fillRect(-e.radius, -e.radius, e.radius*2, e.radius*2); 
-            } else if (e.type === EnemyType.RANGED) {
-                 ctx.beginPath();
-                 ctx.moveTo(e.radius, 0);
-                 ctx.lineTo(-e.radius, e.radius);
-                 ctx.lineTo(-e.radius, -e.radius);
-                 ctx.fill(); 
+                ctx.font = 'bold 14px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('!', 0, 2);
+
             } else {
-                ctx.beginPath();
-                ctx.arc(0, 0, e.radius, 0, Math.PI*2);
-                ctx.fill(); 
+                // --- VISIBLE ENEMY ---
+                ctx.rotate(e.rotation);
+                ctx.fillStyle = e.color;
+                
+                // Draw shape based on type
+                if (e.type === EnemyType.BOSS) {
+                    ctx.beginPath();
+                    const sides = 8;
+                    for (let i = 0; i < sides; i++) {
+                        const angle = (i / sides) * Math.PI * 2;
+                        const r = e.radius * (1 + Math.sin(Date.now() / 200 + i) * 0.1); 
+                        ctx.lineTo(Math.cos(angle) * r, Math.sin(angle) * r);
+                    }
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.fillStyle = '#000';
+                    ctx.beginPath();
+                    ctx.arc(0, 0, e.radius * 0.4, 0, Math.PI*2);
+                    ctx.fill();
+                } else if (e.type === EnemyType.TANK) {
+                    ctx.fillRect(-e.radius, -e.radius, e.radius*2, e.radius*2); 
+                } else if (e.type === EnemyType.RANGED) {
+                     ctx.beginPath();
+                     ctx.moveTo(e.radius, 0);
+                     ctx.lineTo(-e.radius, e.radius);
+                     ctx.lineTo(-e.radius, -e.radius);
+                     ctx.fill(); 
+                } else {
+                    ctx.beginPath();
+                    ctx.arc(0, 0, e.radius, 0, Math.PI*2);
+                    ctx.fill(); 
+                }
             }
             ctx.restore();
 
-            // HP Bar for big enemies
-            if ((e.type === EnemyType.TANK || e.type === EnemyType.BOSS) && e.hp < e.maxHp) {
+            // HP Bar (Only show if visible and damaged)
+            if (!isBlocked && (e.type === EnemyType.TANK || e.type === EnemyType.BOSS) && e.hp < e.maxHp) {
                 const w = e.type === EnemyType.BOSS ? 120 : 40;
                 ctx.fillStyle = 'red';
                 ctx.fillRect(e.position.x - w/2, e.position.y - e.radius - 10, w * (e.hp / e.maxHp), 6);
             }
         });
 
-        // 5. Player
+        // 6. Player
         const p = state.player;
         ctx.save();
         ctx.translate(p.position.x, p.position.y);
@@ -200,7 +316,7 @@ export default function App() {
 
         ctx.restore();
 
-        // 6. Projectiles
+        // 7. Projectiles
         state.projectiles.forEach(proj => {
             ctx.fillStyle = proj.color;
             ctx.shadowBlur = 10;
@@ -225,6 +341,9 @@ export default function App() {
                  let nearest = null;
                  let minD = Infinity;
                  state.enemies.forEach(e => {
+                     // Can only laser visible enemies
+                     if (isLineBlocked(p.position, e.position, state.asteroids)) return;
+
                      const d = Math.hypot(e.position.x - p.position.x, e.position.y - p.position.y);
                      if (d < minD) { minD = d; nearest = e; }
                  });
@@ -244,7 +363,7 @@ export default function App() {
              }
         }
 
-        // 7. Shockwaves
+        // 8. Shockwaves
         state.shockwaves.forEach(wave => {
             ctx.save();
             ctx.strokeStyle = wave.color;
@@ -260,7 +379,7 @@ export default function App() {
             ctx.restore();
         });
 
-        // 8. Particles
+        // 9. Particles
         state.particles.forEach(part => {
             ctx.fillStyle = part.color;
             ctx.globalAlpha = part.life / part.maxLife;
@@ -270,7 +389,7 @@ export default function App() {
             ctx.globalAlpha = 1.0;
         });
 
-        // 9. Floating Text
+        // 10. Floating Text
         ctx.font = 'bold 14px monospace';
         ctx.textAlign = 'center';
         state.floatingTexts.forEach(txt => {
